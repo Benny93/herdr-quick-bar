@@ -8,6 +8,7 @@ CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
 STATE = os.environ.get("HERDR_PLUGIN_STATE_DIR", tempfile.gettempdir())
 CACHE = os.path.join(STATE, "quick-bar.json")  # rows of the current list, read by preview and shortcuts
 TRANSCRIPTS = os.path.join(STATE, "quick-bar-transcripts.json")  # parsed transcripts keyed by path + mtime/size
+PIDS = os.path.join(STATE, "quick-bar-pids.json")  # pane id -> Claude pid, so process-info only runs for new panes
 DIM, BOLD, CYAN, YELLOW, OFF = "\033[2m", "\033[1m", "\033[36m", "\033[33m", "\033[0m"
 # blocked = waiting on a question/approval, done = finished but not looked at yet; both need you
 PRIORITY = {"blocked": 0, "done": 1, "idle": 2, "unknown": 3, "working": 4}
@@ -28,9 +29,35 @@ def one_line(s, n):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+_pids = None
+
+
+def pane_pid(pane_id):
+    """Claude pid running in the pane. herdr calls get slow while the popup opens (~100ms each, served one at a time),
+    so reuse the last answer while that process is still alive; a process never changes panes (a moved pane gets a new id)."""
+    pid = _pids.get(pane_id)
+    if pid and os.path.exists(f"{CLAUDE}/sessions/{pid}.json"):
+        try:
+            os.kill(pid, 0)
+            return pid
+        except OSError:
+            pass
+    pid = herdr("pane", "process-info", "--pane", pane_id).get("process_info", {}).get("foreground_process_group_id")
+    _pids[pane_id] = pid
+    return pid
+
+
 def claude_session(pane_id):
     """Pane -> foreground pid -> ~/.claude/sessions/<pid>.json -> transcript facts."""
-    pid = herdr("pane", "process-info", "--pane", pane_id).get("process_info", {}).get("foreground_process_group_id")
+    pid = pane_pid(pane_id)
     try:
         with open(f"{CLAUDE}/sessions/{pid}.json") as f:
             meta = json.load(f)
@@ -109,13 +136,19 @@ def screen_lines(pane_id):
 
 
 def collect():
-    workspaces = {w["workspace_id"]: w["label"] for w in herdr("workspace", "list").get("workspaces", [])}
-    tabs = {t["tab_id"]: t["label"] for t in herdr("tab", "list").get("tabs", [])}
-    agents = herdr("agent", "list").get("agents", [])
-    # herdr calls take ~10-80ms each; run per-pane work in parallel so open time stays flat
+    global _pids
+    snap = herdr("api", "snapshot").get("snapshot", {})  # agents, workspaces and tabs in one call
+    workspaces = {w["workspace_id"]: w["label"] for w in snap.get("workspaces", [])}
+    tabs = {t["tab_id"]: t["label"] for t in snap.get("tabs", [])}
+    agents = snap.get("agents", [])
+    _pids = load_json(PIDS)
+    # per-pane work (transcripts, screen reads for non-Claude agents) runs in parallel so open time stays flat
     # ponytail: "visible" screen only, scrollback ("recent") is ~40x slower
     with ThreadPoolExecutor(max_workers=16) as pool:
         rows = list(pool.map(lambda a: row(a, workspaces, tabs), agents))
+    os.makedirs(STATE, exist_ok=True)
+    with open(PIDS, "w") as f:
+        json.dump({p: _pids[p] for p in _pids if p in {a["pane_id"] for a in agents}}, f)  # drop closed panes
     # needs-you first, then most recent state change; with a query fzf ranks by match and uses this order for ties
     return sorted(rows, key=lambda r: (PRIORITY.get(r["status"], 3), -r["seq"]))
 
