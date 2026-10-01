@@ -1,4 +1,4 @@
-id = "quick-bar"
+id = "benny93.quick-bar"
 name = "Quick Bar"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
@@ -9,7 +9,7 @@ platforms = ["linux", "macos"]
 id = "open"
 title = "Quick Bar: find agent session"
 contexts = ["global", "workspace"]
-command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin quick-bar --entrypoint bar"]
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint bar"]
 
 [[panes]]
 id = "bar"

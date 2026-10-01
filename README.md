@@ -31,13 +31,13 @@ Bind a key in `~/.config/herdr/config.toml`:
 [[keys.command]]
 key = "prefix+f"
 type = "plugin_action"
-command = "quick-bar.open"
+command = "benny93.quick-bar.open"
 description = "find agent session"
 ```
 
 Then `herdr server reload-config`.
 
-Or open it without a key: `herdr plugin action invoke quick-bar.open`.
+Or open it without a key: `herdr plugin action invoke benny93.quick-bar.open`.
 
 ## Usage
 
