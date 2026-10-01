@@ -72,7 +72,7 @@ _parsed = None
 
 
 def parse_transcript(path):
-    """Cached read_transcript: only re-parses files whose mtime or size changed."""
+    """Cached read_transcript. Transcripts are append-only, so a grown file is read from where we stopped."""
     global _parsed
     if _parsed is None:
         try:
@@ -84,9 +84,11 @@ def parse_transcript(path):
     hit = _parsed.get(path)
     if hit and hit["mtime"] == st.st_mtime and hit["size"] == st.st_size:
         return hit["info"]
-    # ponytail: a changed file is re-read whole; append-only offsets would help if live transcripts get huge
-    info = read_transcript(path)
-    _parsed[path] = {"mtime": st.st_mtime, "size": st.st_size, "info": info}
+    if hit and hit.get("offset", st.st_size + 1) <= st.st_size:
+        info, offset = read_transcript(path, hit["offset"], hit["info"])
+    else:  # new, or shrunk/replaced: start over
+        info, offset = read_transcript(path)
+    _parsed[path] = {"mtime": st.st_mtime, "size": st.st_size, "offset": offset, "info": info}
     return info
 
 
@@ -97,11 +99,17 @@ def save_parsed():
         os.replace(TRANSCRIPTS + ".tmp", TRANSCRIPTS)  # atomic, so a concurrent reader never sees half a file
 
 
-def read_transcript(path):
-    """Titles, prompts, branches, PR links and cwd from one Claude transcript (.jsonl)."""
-    info = {"titles": [], "prompts": [], "branches": [], "prs": [], "cwd": ""}
-    with open(path, errors="replace") as f:
-        for line in f:
+def read_transcript(path, offset=0, info=None):
+    """Titles, prompts, branches, PR links and cwd from a Claude transcript (.jsonl), starting at byte offset and
+    extending info. Returns (info, offset after the last complete line); a half-written last line is read next time."""
+    info = info or {"titles": [], "prompts": [], "branches": [], "prs": [], "cwd": ""}
+    with open(path, "rb") as f:
+        f.seek(offset)
+        for raw in f:
+            if not raw.endswith(b"\n"):
+                break
+            offset += len(raw)
+            line = raw.decode(errors="replace")
             if '"ai-title"' not in line and '"pr-link"' not in line and '"type":"user"' not in line:
                 continue
             try:
@@ -124,7 +132,7 @@ def read_transcript(path):
     for k in ("titles", "prs", "branches"):
         info[k] = list(dict.fromkeys(info[k]))  # dedupe, keep order
     info["prompts"] = info["prompts"][-100:]
-    return info
+    return info, offset
 
 
 def screen_lines(pane_id):
