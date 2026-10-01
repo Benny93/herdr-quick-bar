@@ -7,6 +7,10 @@ HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
 CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
 CACHE = os.path.join(os.environ.get("HERDR_PLUGIN_STATE_DIR", tempfile.gettempdir()), "quick-bar.json")
 DIM, BOLD, CYAN, YELLOW, OFF = "\033[2m", "\033[1m", "\033[36m", "\033[33m", "\033[0m"
+# blocked = waiting on a question/approval, done = finished but not looked at yet; both need you
+PRIORITY = {"blocked": 0, "done": 1, "idle": 2, "unknown": 3, "working": 4}
+BADGE = {"blocked": "\033[1;31m● needs input\033[0m", "done": "\033[1;33m● done\033[0m",
+         "working": "\033[32m… working\033[0m"}
 
 
 def herdr(*args):
@@ -81,7 +85,9 @@ def collect():
     # herdr calls take ~10-80ms each; run per-pane work in parallel so open time stays flat
     # ponytail: "visible" screen only, scrollback ("recent") is ~40x slower
     with ThreadPoolExecutor(max_workers=16) as pool:
-        return list(pool.map(lambda a: row(a, workspaces, tabs), agents))
+        rows = list(pool.map(lambda a: row(a, workspaces, tabs), agents))
+    # needs-you first, then most recent state change; with a query fzf ranks by match and uses this order for ties
+    return sorted(rows, key=lambda r: (PRIORITY.get(r["status"], 3), -r["seq"]))
 
 
 def row(a, workspaces, tabs):
@@ -90,6 +96,7 @@ def row(a, workspaces, tabs):
         "pane": a["pane_id"],
         "agent": a.get("agent", ""),
         "status": a.get("agent_status", ""),
+        "seq": a.get("state_change_seq", 0),
         "workspace": workspaces.get(a.get("workspace_id"), ""),
         "tab": tabs.get(a.get("tab_id"), ""),
         "cwd": (a.get("foreground_cwd") or a.get("cwd") or "").replace(os.path.expanduser("~"), "~"),
@@ -174,7 +181,7 @@ def fzf_line(r):
     if r["status"] == "closed":
         shown = f"{DIM}closed {r['ago']}{OFF} › {CYAN}{r['title']}{OFF}  {DIM}{r['cwd']}{OFF}"
         return f"{r['pane']}\t{shown}\t{DIM}{one_line(' '.join([*r['branches'], *r['prs'], *r['titles'][:-1], *r['prompts'][-20:]]), 4000)}{OFF}"
-    shown = f"{BOLD}{r['workspace']}{OFF} › {r['tab']}  {CYAN}{r['title']}{OFF}  {DIM}{r['cwd']}  [{r['agent']}:{r['status']}]{OFF}"
+    shown = f"{BOLD}{r['workspace']}{OFF} › {r['tab']}  {CYAN}{r['title']}{OFF}  {DIM}{r['cwd']}  [{r['agent']}]{OFF} {BADGE.get(r['status'], DIM + r['status'] + OFF)}"
     # hidden-ish tail: searchable, cut off by the screen width; the preview shows the matching part
     extra = " ".join([r["name"], *r["branches"], *r["prs"], *r["titles"][:-1], *r["prompts"][-20:]])
     return f"{r['pane']}\t{shown}\t{DIM}{one_line(extra, 4000)} {one_line(' '.join(r['screen']), 8000)}{OFF}"
@@ -220,7 +227,7 @@ def main():
         to_all = "all" not in os.environ.get("FZF_PROMPT", "")
         return print(f"change-prompt({'all' if to_all else 'agent'} › )+reload({me} --list {'all' if to_all else 'running'})")
     res = subprocess.run(
-        ["fzf", "--ansi", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
+        ["fzf", "--ansi", "--tiebreak", "index", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
          "--no-hscroll", "--layout", "reverse", "--prompt", "agent › ", "--info", "inline",
          "--header", "search titles, prompts, screen, branch, PR, path · enter: jump · ctrl-r: include closed sessions · esc: close",
          "--bind", f"ctrl-r:transform:{me} --toggle",

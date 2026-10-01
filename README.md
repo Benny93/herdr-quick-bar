@@ -14,6 +14,8 @@ For every agent herdr knows about:
 
 The preview pane shows the session details and highlights the prompts that match your query.
 
+With an empty query, sessions that need you come first: **needs input** (waiting on a question or approval), then **done** (finished, not looked at yet), then idle, then working. Within each group the most recently changed comes first. Once you type, the list is ranked by match quality and this order only breaks ties.
+
 ## Requirements
 
 - herdr ≥ 0.9.0
