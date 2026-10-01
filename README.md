@@ -9,6 +9,7 @@ Lost the terminal where you added a new certificate strategy to the security lib
 For every agent herdr knows about:
 
 - workspace and tab name, cwd, agent status
+- for agents other than Claude Code (Codex, opencode, Copilot, …): the text currently on their screen
 - for Claude Code sessions, also: AI-generated session titles (current and earlier), session name, git branches, PR links, and your last 20 prompts
 
 The preview pane shows the session details and highlights the prompts that match your query.

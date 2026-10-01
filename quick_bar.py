@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Quick Bar: fzf over running herdr agents, enriched with Claude session data. Enter jumps to the pane."""
 import glob, json, os, re, shlex, subprocess, sys, tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
 CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
@@ -59,31 +60,46 @@ def claude_session(pane_id):
     return info
 
 
+def screen_lines(pane_id):
+    """Visible terminal text of an agent pane, minus box-drawing noise."""
+    out = subprocess.run([HERDR, "pane", "read", pane_id, "--source", "visible"],
+                         capture_output=True, text=True).stdout
+    lines = (re.sub(r"[─-╿▀-▟]+", " ", l) for l in out.splitlines())
+    return [one_line(l, 300) for l in lines if l.strip()]
+
+
 def collect():
     workspaces = {w["workspace_id"]: w["label"] for w in herdr("workspace", "list").get("workspaces", [])}
     tabs = {t["tab_id"]: t["label"] for t in herdr("tab", "list").get("tabs", [])}
-    rows = []
-    for a in herdr("agent", "list").get("agents", []):
-        s = claude_session(a["pane_id"]) if a.get("agent") == "claude" else {}
-        rows.append({
-            "pane": a["pane_id"],
-            "agent": a.get("agent", ""),
-            "status": a.get("agent_status", ""),
-            "workspace": workspaces.get(a.get("workspace_id"), ""),
-            "tab": tabs.get(a.get("tab_id"), ""),
-            "cwd": (a.get("foreground_cwd") or a.get("cwd") or "").replace(os.path.expanduser("~"), "~"),
-            "title": (s.get("titles") or [a.get("terminal_title_stripped", "")])[-1],
-            **{k: s.get(k, []) for k in ("titles", "prompts", "branches", "prs")},
-            "name": s.get("name", ""),
-        })
-    return rows
+    agents = herdr("agent", "list").get("agents", [])
+    # herdr calls take ~10-80ms each; run per-pane work in parallel so open time stays flat
+    # ponytail: "visible" screen only, scrollback ("recent") is ~40x slower
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return list(pool.map(lambda a: row(a, workspaces, tabs), agents))
+
+
+def row(a, workspaces, tabs):
+    s = claude_session(a["pane_id"]) if a.get("agent") == "claude" else {}
+    return {
+        "pane": a["pane_id"],
+        "agent": a.get("agent", ""),
+        "status": a.get("agent_status", ""),
+        "workspace": workspaces.get(a.get("workspace_id"), ""),
+        "tab": tabs.get(a.get("tab_id"), ""),
+        "cwd": (a.get("foreground_cwd") or a.get("cwd") or "").replace(os.path.expanduser("~"), "~"),
+        "title": (s.get("titles") or [a.get("terminal_title_stripped", "")])[-1],
+        **{k: s.get(k, []) for k in ("titles", "prompts", "branches", "prs")},
+        "name": s.get("name", ""),
+        # Claude rows already carry titles/prompts; screen text there is mostly noise that drowns fuzzy matching
+        "screen": [] if s else screen_lines(a["pane_id"]),
+    }
 
 
 def fzf_line(r):
     shown = f"{BOLD}{r['workspace']}{OFF} › {r['tab']}  {CYAN}{r['title']}{OFF}  {DIM}{r['cwd']}  [{r['agent']}:{r['status']}]{OFF}"
     # hidden-ish tail: searchable, cut off by the screen width; the preview shows the matching part
     extra = " ".join([r["name"], *r["branches"], *r["prs"], *r["titles"][:-1], *r["prompts"][-20:]])
-    return f"{r['pane']}\t{shown}\t{DIM}{one_line(extra, 4000)}{OFF}"
+    return f"{r['pane']}\t{shown}\t{DIM}{one_line(extra, 4000)} {one_line(' '.join(r['screen']), 8000)}{OFF}"
 
 
 def preview(pane, query):
@@ -99,12 +115,19 @@ def preview(pane, query):
     if len(r["titles"]) > 1:
         print(f"{DIM}earlier titles:{OFF} " + " · ".join(r["titles"][:-1]))
     terms = [t.lstrip("'^!").rstrip("$").lower() for t in query.split() if t.lstrip("'^!").rstrip("$")]
-    hits = [p for p in r["prompts"] if any(t in p.lower() for t in terms)] if terms else []
-    print(f"\n{DIM}{'prompts matching query' if hits else 'recent prompts'}:{OFF}")
-    for p in hits or r["prompts"][-8:]:
-        for t in terms:
-            p = re.sub(re.escape(t), lambda m: f"{YELLOW}{m.group(0)}{OFF}", p, flags=re.I)
-        print(f"› {p}")
+    def show(label, items, fallback):
+        hits = [p for p in items if any(t in p.lower() for t in terms)] if terms else []
+        picked = hits[-10:] or fallback
+        if not picked:
+            return
+        print(f"\n{DIM}{label + ' matching query' if hits else 'recent ' + label}:{OFF}")
+        for p in picked:
+            for t in terms:
+                p = re.sub(re.escape(t), lambda m: f"{YELLOW}{m.group(0)}{OFF}", p, flags=re.I)
+            print(f"› {p}")
+
+    show("prompts", r["prompts"], r["prompts"][-8:])
+    show("screen", r["screen"], r["screen"][-8:])
 
 
 def main():
@@ -121,7 +144,7 @@ def main():
     res = subprocess.run(
         ["fzf", "--ansi", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
          "--no-hscroll", "--layout", "reverse", "--prompt", "agent › ", "--info", "inline",
-         "--header", "type to search titles, prompts, branch, PR, path · enter: jump · esc: close",
+         "--header", "type to search titles, prompts, screen, branch, PR, path · enter: jump · esc: close",
          "--preview", f"python3 {shlex.quote(me)} --preview {{1}} {{q}}", "--preview-window", "down,45%,wrap"],
         input="\n".join(fzf_line(r) for r in rows), capture_output=False, stdout=subprocess.PIPE, text=True,
     )
