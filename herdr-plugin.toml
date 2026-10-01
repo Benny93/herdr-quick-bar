@@ -1,0 +1,20 @@
+id = "quick-bar"
+name = "Quick Bar"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Fuzzy-search running agent sessions (Claude titles, prompts, branch, PR, cwd) and jump to their pane."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Quick Bar: find agent session"
+contexts = ["global", "workspace"]
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin quick-bar --entrypoint bar"]
+
+[[panes]]
+id = "bar"
+title = "Quick Bar"
+placement = "popup"
+width = "80%"
+height = "70%"
+command = ["python3", "quick_bar.py"]
