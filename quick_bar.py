@@ -352,8 +352,10 @@ def main():
     if cmd == "--toggle":  # ctrl-r: flip between running agents and running + closed Claude sessions
         to_all = "all" not in os.environ.get("FZF_PROMPT", "")
         return print(f"change-prompt({'all' if to_all else 'agent'} › )+reload({me} --list {'all' if to_all else 'running'})")
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "herdr-plugin.toml")) as f:
+        version = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.M).group(1)
     res = subprocess.run(
-        ["fzf", "--ansi", "--tiebreak", "index", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
+        ["fzf", "--border", "top", "--border-label", f" Quick Bar v{version} ", "--border-label-pos", "-2", "--ansi", "--tiebreak", "index", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
          "--no-hscroll", "--layout", "reverse", "--prompt", "agent › ", "--info", "inline",
          "--header-first", "--header",
          "enter jump · ctrl-r closed sessions · ctrl-t send prompt · ctrl-o open PR · ctrl-x close pane · esc quit",
