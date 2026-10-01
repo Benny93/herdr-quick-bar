@@ -293,8 +293,8 @@ def main():
     res = subprocess.run(
         ["fzf", "--ansi", "--tiebreak", "index", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
          "--no-hscroll", "--layout", "reverse", "--prompt", "agent › ", "--info", "inline",
-         "--header", "search titles, prompts, screen, branch, PR, path · enter: jump · esc: close\n"
-                     "ctrl-r: closed sessions · ctrl-t: send prompt · ctrl-o: open PR · ctrl-x: close pane",
+         "--header-first", "--header",
+         "enter jump · ctrl-r closed sessions · ctrl-t send prompt · ctrl-o open PR · ctrl-x close pane · esc quit",
          "--bind", f"ctrl-r:transform:{me} --toggle",
          "--bind", f"ctrl-t:execute({me} --send {{1}})+reload({me} --list)",
          "--bind", f"ctrl-o:execute-silent({me} --open-pr {{1}})",
