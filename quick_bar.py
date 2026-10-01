@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Quick Bar: fzf over running herdr agents, enriched with Claude session data. Enter jumps to the pane."""
-import glob, json, os, re, shlex, subprocess, sys, tempfile, time
-from concurrent.futures import ThreadPoolExecutor
+import glob, json, os, re, shlex, subprocess, sys, time
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
 CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
-STATE = os.environ.get("HERDR_PLUGIN_STATE_DIR", tempfile.gettempdir())
-CACHE = os.path.join(STATE, "quick-bar.json")  # rows of the current list, read by preview and shortcuts
+# imports needed only for building the list are done lazily: the preview re-runs this script on every cursor move
+STATE = os.environ.get("HERDR_PLUGIN_STATE_DIR") or __import__("tempfile").gettempdir()
+CACHE = os.path.join(STATE, "quick-bar.jsonl")  # one row per line, "pane" first; read by preview and shortcuts
 TRANSCRIPTS = os.path.join(STATE, "quick-bar-transcripts.json")  # parsed transcripts keyed by path + mtime/size
 PIDS = os.path.join(STATE, "quick-bar-pids.json")  # pane id -> Claude pid, so process-info only runs for new panes
 DIM, BOLD, CYAN, YELLOW, OFF = "\033[2m", "\033[1m", "\033[36m", "\033[33m", "\033[0m"
@@ -163,6 +163,7 @@ def collect():
     before = dict(_pids)
     # per-pane work (transcripts, screen reads for non-Claude agents) runs in parallel so open time stays flat
     # ponytail: "visible" screen only, scrollback ("recent") is ~40x slower
+    from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=16) as pool:
         rows = list(pool.map(lambda a: row(a, workspaces, tabs), agents))
     live = {a["pane_id"] for a in agents}
@@ -243,14 +244,20 @@ def build(mode):
         rows += closed_rows(live_session_ids() | {r["session_id"] for r in rows})
     os.makedirs(STATE, exist_ok=True)
     save_parsed(prune=mode == "all")
-    with open(CACHE, "w") as f:
-        json.dump(rows, f)
+    with open(CACHE + ".tmp", "w") as f:
+        f.writelines(json.dumps(r) + "\n" for r in rows)
+    os.replace(CACHE + ".tmp", CACHE)
     return "\n".join(fzf_line(r) for r in rows)
 
 
 def cached_row(pane):
-    with open(CACHE) as f:
-        return next((x for x in json.load(f) if x["pane"] == pane), None)
+    """Decode only the matching line; rows are dumped with "pane" as their first key."""
+    prefix = '{"pane": ' + json.dumps(pane) + ","
+    try:
+        with open(CACHE) as f:
+            return next((json.loads(l) for l in f if l.startswith(prefix)), None)
+    except OSError:
+        return None
 
 
 def send_prompt(pane):
