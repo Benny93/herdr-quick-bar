@@ -50,6 +50,9 @@ Or open it without a key: `herdr plugin action invoke benny93.quick-bar.open`.
 | ↑ / ↓ | move |
 | Enter | focus the agent's pane (closed session: resume it in a new tab) |
 | Ctrl-R | toggle closed Claude sessions in the list |
+| Ctrl-T | type a prompt and send it to the selected agent without jumping |
+| Ctrl-O | open the session's latest PR in the browser |
+| Ctrl-X | close the selected pane (asks y/N first; stops the agent) |
 | Esc | close |
 
 ## How it works

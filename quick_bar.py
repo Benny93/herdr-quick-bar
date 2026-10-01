@@ -162,10 +162,42 @@ def build(mode):
     return "\n".join(fzf_line(r) for r in rows)
 
 
+def cached_row(pane):
+    with open(CACHE) as f:
+        return next((x for x in json.load(f) if x["pane"] == pane), None)
+
+
+def send_prompt(pane):
+    """ctrl-t: type a prompt and submit it to the agent without leaving the bar."""
+    r = cached_row(pane)
+    if not r or r["status"] == "closed":
+        return input("Closed sessions can't take prompts; press Enter to resume it instead. ")
+    text = input(f"{BOLD}{r['title']}{OFF}\nprompt (empty cancels) › ").strip()
+    if text:
+        res = subprocess.run([HERDR, "agent", "prompt", pane, text], capture_output=True, text=True)
+        if res.returncode:
+            input(f"failed: {one_line(res.stderr, 300)}\nEnter to continue ")
+
+
+def open_pr(pane):
+    """ctrl-o: open the session's most recent PR link."""
+    r = cached_row(pane)
+    if r and r["prs"]:
+        subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", r["prs"][-1]], capture_output=True)
+
+
+def close_pane(pane):
+    """ctrl-x: close the agent's pane after confirmation (kills the agent)."""
+    r = cached_row(pane)
+    if not r or r["status"] == "closed":
+        return
+    if input(f"Close {r['workspace']} › {r['tab']} ({r['title']})? This stops the agent. [y/N] ").strip().lower() == "y":
+        subprocess.run([HERDR, "pane", "close", pane], capture_output=True)
+
+
 def resume(sid):
     """Reopen a closed Claude session in a new tab, next to running agents in the same folder if any."""
-    with open(CACHE) as f:
-        r = next(x for x in json.load(f) if x["pane"] == f"closed:{sid}")
+    r = cached_row(f"closed:{sid}")
     cwd = r["real_cwd"]
     near = [a for a in herdr("agent", "list").get("agents", []) if cwd and a.get("cwd") == cwd]
     ws = near[0]["workspace_id"] if near else os.environ.get("HERDR_WORKSPACE_ID")
@@ -188,8 +220,7 @@ def fzf_line(r):
 
 
 def preview(pane, query):
-    with open(CACHE) as f:
-        r = next((x for x in json.load(f) if x["pane"] == pane), None)
+    r = cached_row(pane)
     if not r:
         return
     where = f"closed {r['ago']} · enter resumes it in a new tab" if r["status"] == "closed" else f"{r['workspace']} › {r['tab']}   ({r['agent']}, {r['status']})"
@@ -221,16 +252,22 @@ def main():
     cmd, args = (sys.argv[1:2] or [""])[0], sys.argv[2:]
     if cmd == "--preview":
         return preview(args[0], args[1] if len(args) > 1 else "")
-    if cmd == "--list":
-        return print(build(args[0] if args else ""))
+    if cmd == "--list":  # no arg: keep the current mode, read from the prompt fzf exports
+        return print(build(args[0] if args else "all" if "all" in os.environ.get("FZF_PROMPT", "") else "running"))
+    if cmd in ("--send", "--open-pr", "--close"):
+        return {"--send": send_prompt, "--open-pr": open_pr, "--close": close_pane}[cmd](args[0])
     if cmd == "--toggle":  # ctrl-r: flip between running agents and running + closed Claude sessions
         to_all = "all" not in os.environ.get("FZF_PROMPT", "")
         return print(f"change-prompt({'all' if to_all else 'agent'} › )+reload({me} --list {'all' if to_all else 'running'})")
     res = subprocess.run(
         ["fzf", "--ansi", "--tiebreak", "index", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
          "--no-hscroll", "--layout", "reverse", "--prompt", "agent › ", "--info", "inline",
-         "--header", "search titles, prompts, screen, branch, PR, path · enter: jump · ctrl-r: include closed sessions · esc: close",
+         "--header", "search titles, prompts, screen, branch, PR, path · enter: jump · esc: close\n"
+                     "ctrl-r: closed sessions · ctrl-t: send prompt · ctrl-o: open PR · ctrl-x: close pane",
          "--bind", f"ctrl-r:transform:{me} --toggle",
+         "--bind", f"ctrl-t:execute({me} --send {{1}})+reload({me} --list)",
+         "--bind", f"ctrl-o:execute-silent({me} --open-pr {{1}})",
+         "--bind", f"ctrl-x:execute({me} --close {{1}})+reload({me} --list)",
          "--preview", f"{me} --preview {{1}} {{q}}", "--preview-window", "down,45%,wrap"],
         input=build("running"), stdout=subprocess.PIPE, text=True,
     )
