@@ -59,4 +59,6 @@ Or open it without a key: `herdr plugin action invoke benny93.quick-bar.open`.
 
 `herdr agent list` gives the panes. For each Claude pane, the pane's foreground process id maps to `~/.claude/sessions/<pid>.json`, which holds the session id; the transcript at `~/.claude/projects/*/<sessionId>.jsonl` supplies titles, prompts, branches and PR links. `CLAUDE_CONFIG_DIR` is respected.
 
+Parsed transcripts are cached in the plugin state dir (`quick-bar-transcripts.json`), keyed by file mtime and size, so only sessions that changed are re-read. Delete the file to rebuild it.
+
 Closed sessions (Ctrl-R) are every transcript under `~/.claude/projects` whose Claude process is no longer running. Enter opens a new tab in that session's folder, in the workspace that already has an agent there (else the current one), and runs `claude --resume <id>`.

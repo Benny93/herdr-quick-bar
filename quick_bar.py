@@ -5,7 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
 CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
-CACHE = os.path.join(os.environ.get("HERDR_PLUGIN_STATE_DIR", tempfile.gettempdir()), "quick-bar.json")
+STATE = os.environ.get("HERDR_PLUGIN_STATE_DIR", tempfile.gettempdir())
+CACHE = os.path.join(STATE, "quick-bar.json")  # rows of the current list, read by preview and shortcuts
+TRANSCRIPTS = os.path.join(STATE, "quick-bar-transcripts.json")  # parsed transcripts keyed by path + mtime/size
 DIM, BOLD, CYAN, YELLOW, OFF = "\033[2m", "\033[1m", "\033[36m", "\033[33m", "\033[0m"
 # blocked = waiting on a question/approval, done = finished but not looked at yet; both need you
 PRIORITY = {"blocked": 0, "done": 1, "idle": 2, "unknown": 3, "working": 4}
@@ -39,12 +41,40 @@ def claude_session(pane_id):
     return {**info, "name": meta.get("name", ""), "session_id": meta.get("sessionId", "")}
 
 
+_parsed = None
+
+
 def parse_transcript(path):
+    """Cached read_transcript: only re-parses files whose mtime or size changed."""
+    global _parsed
+    if _parsed is None:
+        try:
+            with open(TRANSCRIPTS) as f:
+                _parsed = json.load(f)
+        except (OSError, ValueError):
+            _parsed = {}
+    st = os.stat(path)
+    hit = _parsed.get(path)
+    if hit and hit["mtime"] == st.st_mtime and hit["size"] == st.st_size:
+        return hit["info"]
+    # ponytail: a changed file is re-read whole; append-only offsets would help if live transcripts get huge
+    info = read_transcript(path)
+    _parsed[path] = {"mtime": st.st_mtime, "size": st.st_size, "info": info}
+    return info
+
+
+def save_parsed():
+    if _parsed is not None:
+        with open(TRANSCRIPTS + ".tmp", "w") as f:
+            json.dump({p: v for p, v in _parsed.items() if os.path.exists(p)}, f)
+        os.replace(TRANSCRIPTS + ".tmp", TRANSCRIPTS)  # atomic, so a concurrent reader never sees half a file
+
+
+def read_transcript(path):
     """Titles, prompts, branches, PR links and cwd from one Claude transcript (.jsonl)."""
     info = {"titles": [], "prompts": [], "branches": [], "prs": [], "cwd": ""}
     with open(path, errors="replace") as f:
         for line in f:
-            # ponytail: full transcript scan, ~5s for all ~800MB of history; cache by mtime if it gets slow
             if '"ai-title"' not in line and '"pr-link"' not in line and '"type":"user"' not in line:
                 continue
             try:
@@ -156,7 +186,8 @@ def build(mode):
     rows = collect()
     if mode == "all":
         rows += closed_rows(live_session_ids() | {r["session_id"] for r in rows})
-    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    os.makedirs(STATE, exist_ok=True)
+    save_parsed()
     with open(CACHE, "w") as f:
         json.dump(rows, f)
     return "\n".join(fzf_line(r) for r in rows)
