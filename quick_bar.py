@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Quick Bar: fzf over running herdr agents, enriched with Claude session data. Enter jumps to the pane."""
-import glob, json, os, re, shlex, subprocess, sys, tempfile
+import glob, json, os, re, shlex, subprocess, sys, tempfile, time
 from concurrent.futures import ThreadPoolExecutor
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
@@ -30,13 +30,17 @@ def claude_session(pane_id):
             meta = json.load(f)
     except (OSError, ValueError, TypeError):
         return {}
-    info = {"name": meta.get("name", ""), "titles": [], "prompts": [], "branches": [], "prs": []}
     paths = glob.glob(f"{CLAUDE}/projects/*/{meta.get('sessionId')}.jsonl")
-    if not paths:
-        return info
-    with open(paths[0], errors="replace") as f:
+    info = parse_transcript(paths[0]) if paths else {"titles": [], "prompts": [], "branches": [], "prs": [], "cwd": ""}
+    return {**info, "name": meta.get("name", ""), "session_id": meta.get("sessionId", "")}
+
+
+def parse_transcript(path):
+    """Titles, prompts, branches, PR links and cwd from one Claude transcript (.jsonl)."""
+    info = {"titles": [], "prompts": [], "branches": [], "prs": [], "cwd": ""}
+    with open(path, errors="replace") as f:
         for line in f:
-            # ponytail: full transcript scan per open; fine for hundreds of MB total, cache by mtime if it gets slow
+            # ponytail: full transcript scan, ~5s for all ~800MB of history; cache by mtime if it gets slow
             if '"ai-title"' not in line and '"pr-link"' not in line and '"type":"user"' not in line:
                 continue
             try:
@@ -55,8 +59,10 @@ def claude_session(pane_id):
             b = e.get("gitBranch")
             if b:
                 info["branches"].append(b)
+            info["cwd"] = info["cwd"] or e.get("cwd", "")
     for k in ("titles", "prs", "branches"):
         info[k] = list(dict.fromkeys(info[k]))  # dedupe, keep order
+    info["prompts"] = info["prompts"][-100:]
     return info
 
 
@@ -90,12 +96,84 @@ def row(a, workspaces, tabs):
         "title": (s.get("titles") or [a.get("terminal_title_stripped", "")])[-1],
         **{k: s.get(k, []) for k in ("titles", "prompts", "branches", "prs")},
         "name": s.get("name", ""),
+        "session_id": s.get("session_id", ""),
         # Claude rows already carry titles/prompts; screen text there is mostly noise that drowns fuzzy matching
         "screen": [] if s else screen_lines(a["pane_id"]),
     }
 
 
+def live_session_ids():
+    """Session ids of Claude processes still running anywhere (herdr or not) - never offer those for resume."""
+    ids = set()
+    for p in glob.glob(f"{CLAUDE}/sessions/*.json"):
+        try:
+            with open(p) as f:
+                meta = json.load(f)
+            os.kill(meta["pid"], 0)
+            ids.add(meta["sessionId"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return ids
+
+
+def ago(ts):
+    d = time.time() - ts
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if d >= n:
+            return f"{int(d // n)}{unit} ago"
+    return "just now"
+
+
+def closed_rows(skip_ids):
+    paths = sorted(glob.glob(f"{CLAUDE}/projects/*/*.jsonl"), key=os.path.getmtime, reverse=True)
+    rows = []
+    for path in paths:
+        sid = os.path.basename(path)[:-len(".jsonl")]
+        if sid in skip_ids:
+            continue
+        info = parse_transcript(path)
+        if not info["prompts"]:
+            continue  # empty or tool-only sessions are not worth resuming
+        rows.append({
+            "pane": f"closed:{sid}", "agent": "claude", "status": "closed", "workspace": "", "tab": "",
+            "cwd": info["cwd"].replace(os.path.expanduser("~"), "~"),
+            "title": (info["titles"] or info["prompts"][:1])[-1][:80],
+            **{k: info[k] for k in ("titles", "prompts", "branches", "prs")},
+            "name": "", "session_id": sid, "screen": [], "ago": ago(os.path.getmtime(path)), "real_cwd": info["cwd"],
+        })
+    return rows
+
+
+def build(mode):
+    """Rows for fzf ("all" adds closed Claude sessions); also written to CACHE for the preview."""
+    rows = collect()
+    if mode == "all":
+        rows += closed_rows(live_session_ids() | {r["session_id"] for r in rows})
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    with open(CACHE, "w") as f:
+        json.dump(rows, f)
+    return "\n".join(fzf_line(r) for r in rows)
+
+
+def resume(sid):
+    """Reopen a closed Claude session in a new tab, next to running agents in the same folder if any."""
+    with open(CACHE) as f:
+        r = next(x for x in json.load(f) if x["pane"] == f"closed:{sid}")
+    cwd = r["real_cwd"]
+    near = [a for a in herdr("agent", "list").get("agents", []) if cwd and a.get("cwd") == cwd]
+    ws = near[0]["workspace_id"] if near else os.environ.get("HERDR_WORKSPACE_ID")
+    args = ["tab", "create", "--focus", "--label", r["title"][:30]]
+    args += ["--workspace", ws] if ws else []
+    args += ["--cwd", cwd] if os.path.isdir(cwd) else []
+    pane = herdr(*args).get("root_pane", {}).get("pane_id")
+    if pane:
+        subprocess.run([HERDR, "pane", "run", pane, f"claude --resume {shlex.quote(sid)}"], capture_output=True)
+
+
 def fzf_line(r):
+    if r["status"] == "closed":
+        shown = f"{DIM}closed {r['ago']}{OFF} › {CYAN}{r['title']}{OFF}  {DIM}{r['cwd']}{OFF}"
+        return f"{r['pane']}\t{shown}\t{DIM}{one_line(' '.join([*r['branches'], *r['prs'], *r['titles'][:-1], *r['prompts'][-20:]]), 4000)}{OFF}"
     shown = f"{BOLD}{r['workspace']}{OFF} › {r['tab']}  {CYAN}{r['title']}{OFF}  {DIM}{r['cwd']}  [{r['agent']}:{r['status']}]{OFF}"
     # hidden-ish tail: searchable, cut off by the screen width; the preview shows the matching part
     extra = " ".join([r["name"], *r["branches"], *r["prs"], *r["titles"][:-1], *r["prompts"][-20:]])
@@ -107,7 +185,8 @@ def preview(pane, query):
         r = next((x for x in json.load(f) if x["pane"] == pane), None)
     if not r:
         return
-    print(f"{BOLD}{r['title']}{OFF}\n{r['workspace']} › {r['tab']}   ({r['agent']}, {r['status']})\n{r['cwd']}")
+    where = f"closed {r['ago']} · enter resumes it in a new tab" if r["status"] == "closed" else f"{r['workspace']} › {r['tab']}   ({r['agent']}, {r['status']})"
+    print(f"{BOLD}{r['title']}{OFF}\n{where}\n{r['cwd']}")
     for label, key in (("session", "name"), ("branch", "branches"), ("PR", "prs")):
         v = r[key] if isinstance(r[key], str) else ", ".join(r[key])
         if v:
@@ -131,25 +210,27 @@ def preview(pane, query):
 
 
 def main():
-    if sys.argv[1:2] == ["--preview"]:
-        return preview(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
-    rows = collect()
-    if not rows:
-        print("No running agents found. Press Enter.")
-        return input()
-    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    with open(CACHE, "w") as f:
-        json.dump(rows, f)
-    me = os.path.abspath(__file__)
+    me = f"python3 {shlex.quote(os.path.abspath(__file__))}"
+    cmd, args = (sys.argv[1:2] or [""])[0], sys.argv[2:]
+    if cmd == "--preview":
+        return preview(args[0], args[1] if len(args) > 1 else "")
+    if cmd == "--list":
+        return print(build(args[0] if args else ""))
+    if cmd == "--toggle":  # ctrl-r: flip between running agents and running + closed Claude sessions
+        to_all = "all" not in os.environ.get("FZF_PROMPT", "")
+        return print(f"change-prompt({'all' if to_all else 'agent'} › )+reload({me} --list {'all' if to_all else 'running'})")
     res = subprocess.run(
         ["fzf", "--ansi", "--delimiter", "\t", "--with-nth", "2,3", "--accept-nth", "1",
          "--no-hscroll", "--layout", "reverse", "--prompt", "agent › ", "--info", "inline",
-         "--header", "type to search titles, prompts, screen, branch, PR, path · enter: jump · esc: close",
-         "--preview", f"python3 {shlex.quote(me)} --preview {{1}} {{q}}", "--preview-window", "down,45%,wrap"],
-        input="\n".join(fzf_line(r) for r in rows), capture_output=False, stdout=subprocess.PIPE, text=True,
+         "--header", "search titles, prompts, screen, branch, PR, path · enter: jump · ctrl-r: include closed sessions · esc: close",
+         "--bind", f"ctrl-r:transform:{me} --toggle",
+         "--preview", f"{me} --preview {{1}} {{q}}", "--preview-window", "down,45%,wrap"],
+        input=build("running"), stdout=subprocess.PIPE, text=True,
     )
     pane = res.stdout.split("\t")[0].strip()
-    if pane:
+    if pane.startswith("closed:"):
+        resume(pane[len("closed:"):])
+    elif pane:
         subprocess.run([HERDR, "agent", "focus", pane], capture_output=True)
 
 

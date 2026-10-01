@@ -46,11 +46,12 @@ Or open it without a key: `herdr plugin action invoke benny93.quick-bar.open`.
 | --- | --- |
 | type | filter (fuzzy; `'word` for exact, space for AND) |
 | ↑ / ↓ | move |
-| Enter | focus the agent's pane |
+| Enter | focus the agent's pane (closed session: resume it in a new tab) |
+| Ctrl-R | toggle closed Claude sessions in the list |
 | Esc | close |
 
 ## How it works
 
 `herdr agent list` gives the panes. For each Claude pane, the pane's foreground process id maps to `~/.claude/sessions/<pid>.json`, which holds the session id; the transcript at `~/.claude/projects/*/<sessionId>.jsonl` supplies titles, prompts, branches and PR links. `CLAUDE_CONFIG_DIR` is respected.
 
-Only running sessions are listed.
+Closed sessions (Ctrl-R) are every transcript under `~/.claude/projects` whose Claude process is no longer running. Enter opens a new tab in that session's folder, in the workspace that already has an agent there (else the current one), and runs `claude --resume <id>`.
