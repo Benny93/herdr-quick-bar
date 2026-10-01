@@ -69,11 +69,12 @@ def claude_session(pane_id):
 
 
 _parsed = None
+_parsed_dirty = False
 
 
 def parse_transcript(path):
     """Cached read_transcript. Transcripts are append-only, so a grown file is read from where we stopped."""
-    global _parsed
+    global _parsed, _parsed_dirty
     if _parsed is None:
         try:
             with open(TRANSCRIPTS) as f:
@@ -89,13 +90,22 @@ def parse_transcript(path):
     else:  # new, or shrunk/replaced: start over
         info, offset = read_transcript(path)
     _parsed[path] = {"mtime": st.st_mtime, "size": st.st_size, "offset": offset, "info": info}
+    _parsed_dirty = True
     return info
 
 
-def save_parsed():
-    if _parsed is not None:
+def save_parsed(prune):
+    """Write the transcript cache if anything was re-read. prune drops deleted files (needs a stat per entry,
+    so only done when all transcripts were listed anyway)."""
+    global _parsed, _parsed_dirty
+    if prune and _parsed is not None:
+        kept = {p: v for p, v in _parsed.items() if os.path.exists(p)}
+        if len(kept) != len(_parsed):
+            _parsed = kept
+            _parsed_dirty = True
+    if _parsed_dirty:
         with open(TRANSCRIPTS + ".tmp", "w") as f:
-            json.dump({p: v for p, v in _parsed.items() if os.path.exists(p)}, f)
+            json.dump(_parsed, f)
         os.replace(TRANSCRIPTS + ".tmp", TRANSCRIPTS)  # atomic, so a concurrent reader never sees half a file
 
 
@@ -150,13 +160,17 @@ def collect():
     tabs = {t["tab_id"]: t["label"] for t in snap.get("tabs", [])}
     agents = snap.get("agents", [])
     _pids = load_json(PIDS)
+    before = dict(_pids)
     # per-pane work (transcripts, screen reads for non-Claude agents) runs in parallel so open time stays flat
     # ponytail: "visible" screen only, scrollback ("recent") is ~40x slower
     with ThreadPoolExecutor(max_workers=16) as pool:
         rows = list(pool.map(lambda a: row(a, workspaces, tabs), agents))
-    os.makedirs(STATE, exist_ok=True)
-    with open(PIDS, "w") as f:
-        json.dump({p: _pids[p] for p in _pids if p in {a["pane_id"] for a in agents}}, f)  # drop closed panes
+    live = {a["pane_id"] for a in agents}
+    _pids = {p: pid for p, pid in _pids.items() if p in live}  # drop closed panes
+    if _pids != before:
+        os.makedirs(STATE, exist_ok=True)
+        with open(PIDS, "w") as f:
+            json.dump(_pids, f)
     # needs-you first, then most recent state change; with a query fzf ranks by match and uses this order for ties
     return sorted(rows, key=lambda r: (PRIORITY.get(r["status"], 3), -r["seq"]))
 
@@ -228,7 +242,7 @@ def build(mode):
     if mode == "all":
         rows += closed_rows(live_session_ids() | {r["session_id"] for r in rows})
     os.makedirs(STATE, exist_ok=True)
-    save_parsed()
+    save_parsed(prune=mode == "all")
     with open(CACHE, "w") as f:
         json.dump(rows, f)
     return "\n".join(fzf_line(r) for r in rows)
