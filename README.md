@@ -24,6 +24,14 @@ With an empty query, sessions that need you come first: **needs input** (waiting
 
 ## Install
 
+Straight from GitHub:
+
+```sh
+herdr plugin install Benny93/herdr-quick-bar
+```
+
+Or from a local clone (handy for development, edits apply on the next open):
+
 ```sh
 herdr plugin link /path/to/herdr-quick-bar
 ```
