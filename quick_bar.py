@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Quick Bar: fzf over running herdr agents, enriched with Claude session data. Enter jumps to the pane."""
-import glob, json, os, re, shlex, subprocess, sys, time
+import glob, json, os, re, shlex, shutil, subprocess, sys, time
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
 CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
@@ -352,6 +352,12 @@ def main():
     if cmd == "--toggle":  # ctrl-r: flip between running agents and running + closed Claude sessions
         to_all = "all" not in os.environ.get("FZF_PROMPT", "")
         return print(f"change-prompt({'all' if to_all else 'agent'} › )+reload({me} --list {'all' if to_all else 'running'})")
+    fzf = shutil.which("fzf")
+    if not fzf:
+        return input("Quick Bar needs fzf, which was not found on PATH.\nInstall it with: brew install fzf\n\nPress Enter to close. ")
+    found = subprocess.run([fzf, "--version"], capture_output=True, text=True).stdout.split(" ")[0].strip()
+    if tuple(int(n) for n in re.findall(r"\d+", found)[:2]) < (0, 60):  # --accept-nth arrived in 0.60
+        return input(f"Quick Bar needs fzf 0.60 or newer, found {found or 'unknown'}.\nUpgrade with: brew upgrade fzf\n\nPress Enter to close. ")
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "herdr-plugin.toml")) as f:
         version = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.M).group(1)
     res = subprocess.run(
@@ -374,4 +380,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        if len(sys.argv) > 1:
+            raise  # helper modes run inside fzf, which shows their output itself
+        import traceback
+        traceback.print_exc()  # the popup closes when we exit, so keep the error readable
+        input("\nQuick Bar crashed, details above. Press Enter to close. ")
