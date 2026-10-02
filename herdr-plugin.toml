@@ -1,6 +1,6 @@
 id = "benny93.quick-bar"
 name = "Quick Bar"
-version = "0.2.1"
+version = "0.2.2"
 min_herdr_version = "0.9.0"
 description = "Fuzzy-search running agent sessions (Claude titles, prompts, branch, PR, cwd) and jump to their pane."
 platforms = ["linux", "macos"]
