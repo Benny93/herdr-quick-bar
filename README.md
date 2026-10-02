@@ -4,6 +4,10 @@ A [herdr](https://herdr.dev) plugin that opens a fuzzy-search popup over all run
 
 Lost the terminal where you added a new certificate strategy to the security library? Open Quick Bar, type `security`, hit Enter.
 
+![Quick Bar demo](demo/quick-bar.gif)
+
+<sub>Demo uses mock data (`demo/herdr`). Re-record with `vhs demo/demo.tape`.</sub>
+
 ## What it searches
 
 For every agent herdr knows about:

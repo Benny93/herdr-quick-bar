@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Fake herdr + fake Claude data for recording the README demo. Never touches real sessions.
+
+  demo/herdr --fixtures DIR   write a fake ~/.claude into DIR (use as CLAUDE_CONFIG_DIR)
+  demo/herdr <herdr args>     answer the few herdr calls quick_bar.py makes (use as HERDR_BIN_PATH)
+"""
+import json, os, sys, time
+
+HOME = os.path.expanduser("~")
+WORKSPACES = ["payments-api", "web-shop", "infra", "security-lib", "docs-site"]
+# pane, workspace no, tab, agent, status, seq, pid, title, repo, branch, PR, prompts
+AGENTS = [
+    ("w1:p1", 1, "webhooks", "claude", "blocked", 90, 41001, "Retry policy for webhook delivery", "payments-api",
+     "feat/webhook-retries", 412, ["add exponential backoff to webhook delivery", "keep retries idempotent, use the event id as key"]),
+    ("w2:p1", 2, "checkout", "claude", "done", 80, 41002, "Checkout page accessibility fixes", "web-shop",
+     "fix/checkout-a11y", 1187, ["audit the checkout page for accessibility issues", "fix the focus order in the address form"]),
+    ("w4:p1", 4, "certs", "claude", "idle", 70, 41003, "Hot-reload TLS certificates", "security-lib",
+     "feat/cert-hot-reload", 73, ["add a new certificate strategy that reloads certs from disk", "make the strategy configurable via application.yaml"]),
+    ("w3:p1", 3, "redis", "claude", "working", 95, 41004, "Terraform module for Redis cluster", "infra",
+     "feat/redis-module", 88, ["write a terraform module for a 3 node redis cluster", "add alarms for memory usage"]),
+    ("w5:p1", 5, "astro", "claude", "idle", 40, 41005, "Migrate docs to Astro", "docs-site",
+     "chore/astro", None, ["migrate the docs site from jekyll to astro", "keep all existing urls working"]),
+    ("w1:p2", 1, "webhooks", "codex", "idle", 60, 41006, "Sign outgoing webhooks", "payments-api", None, None, []),
+]
+CLOSED = [  # title, repo, branch, days ago, prompts
+    ("Fix flaky integration tests", "payments-api", "fix/flaky-tests", 1, ["the refund integration test fails randomly in CI"]),
+    ("Dark mode for the shop header", "web-shop", "feat/dark-header", 3, ["add a dark mode toggle to the header"]),
+    ("Rotate TLS certificates", "infra", "main", 6, ["rotate the expiring tls certificates on the load balancer"]),
+    ("Upgrade to Node 22", "web-shop", "chore/node22", 12, ["upgrade the shop to node 22 and fix the build"]),
+    ("Password hashing with argon2", "security-lib", "feat/argon2", 20, ["switch password hashing from bcrypt to argon2"]),
+]
+CODEX_SCREEN = "> add request signing to outgoing webhooks\n\n  Added HMAC-SHA256 signature header to webhook requests.\n  Updated docs/webhooks.md with verification steps."
+
+
+def cwd(repo):
+    return f"{HOME}/code/{repo}"
+
+
+def fixtures(root):
+    os.makedirs(f"{root}/sessions", exist_ok=True)
+
+    def transcript(sid, title, repo, branch, pr, prompts, mtime=None):
+        d = f"{root}/projects/-code-{repo}"
+        os.makedirs(d, exist_ok=True)
+        lines = [{"type": "user", "message": {"content": p}, "cwd": cwd(repo), "gitBranch": branch} for p in prompts]
+        lines.append({"type": "ai-title", "aiTitle": title})
+        if pr:
+            lines.append({"type": "pr-link", "prUrl": f"https://github.com/acme/{repo}/pull/{pr}"})
+        path = f"{d}/{sid}.jsonl"
+        with open(path, "w") as f:
+            f.writelines(json.dumps(l, separators=(",", ":")) + "\n" for l in lines)  # compact, like real transcripts
+        if mtime:
+            os.utime(path, (mtime, mtime))
+
+    for pane, _, _, agent, _, _, pid, title, repo, branch, pr, prompts in AGENTS:
+        if agent != "claude":
+            continue
+        sid = f"00000000-0000-4000-8000-{pid:012d}"
+        with open(f"{root}/sessions/{pid}.json", "w") as f:
+            json.dump({"pid": pid, "sessionId": sid, "cwd": cwd(repo), "name": f"{repo}-{pid % 100}"}, f)
+        transcript(sid, title, repo, branch, pr, prompts)
+    for i, (title, repo, branch, days, prompts) in enumerate(CLOSED):
+        transcript(f"00000000-0000-4000-9000-{i:012d}", title, repo, branch, None, prompts, time.time() - days * 86400)
+
+
+def snapshot():
+    return {
+        "workspaces": [{"workspace_id": f"w{i}", "label": f"[{i}] {n}"} for i, n in enumerate(WORKSPACES, 1)],
+        "tabs": [{"tab_id": f"w{a[1]}:t1", "label": f"[1] {a[2]}"} for a in AGENTS],
+        "agents": [{"pane_id": a[0], "workspace_id": f"w{a[1]}", "tab_id": f"w{a[1]}:t1", "agent": a[3],
+                    "agent_status": a[4], "state_change_seq": a[5], "cwd": cwd(a[8]), "foreground_cwd": cwd(a[8]),
+                    "terminal_title_stripped": a[7]} for a in AGENTS],
+    }
+
+
+def main(args):
+    if args[:1] == ["--fixtures"]:
+        return fixtures(args[1])
+    if args[:2] == ["api", "snapshot"]:
+        result = {"snapshot": snapshot()}
+    elif args[:2] == ["pane", "process-info"]:
+        pid = next(a[6] for a in AGENTS if a[0] == args[-1])
+        result = {"process_info": {"foreground_process_group_id": pid}}
+    elif args[:2] == ["pane", "read"]:
+        return print(CODEX_SCREEN if args[2] == "w1:p2" else "")
+    else:
+        result = {}  # focus, prompt, close, ...: no-ops in the demo
+    print(json.dumps({"result": result}))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
