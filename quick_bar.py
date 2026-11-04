@@ -3,6 +3,11 @@
 import glob, json, os, re, shlex, shutil, subprocess, sys, time
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
+# herdr may run as a service (brew services, launchd, systemd) with a minimal PATH that misses fzf; add the usual
+# install dirs. Child processes (fzf and the preview/reload commands it runs) inherit this.
+os.environ["PATH"] = os.pathsep.join(dict.fromkeys(os.environ.get("PATH", "").split(os.pathsep) + [
+    "/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin",
+    *(os.path.expanduser(d) for d in ("~/.fzf/bin", "~/.local/bin", "~/.nix-profile/bin"))]))
 CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
 # imports needed only for building the list are done lazily: the preview re-runs this script on every cursor move
 STATE = os.environ.get("HERDR_PLUGIN_STATE_DIR") or __import__("tempfile").gettempdir()
@@ -341,7 +346,7 @@ def preview(pane, query):
 
 
 def main():
-    me = f"python3 {shlex.quote(os.path.abspath(__file__))}"
+    me = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     cmd, args = (sys.argv[1:2] or [""])[0], sys.argv[2:]
     if cmd == "--preview":
         return preview(args[0], args[1] if len(args) > 1 else "")
@@ -354,7 +359,8 @@ def main():
         return print(f"change-prompt({'all' if to_all else 'agent'} › )+reload({me} --list {'all' if to_all else 'running'})")
     fzf = shutil.which("fzf")
     if not fzf:
-        return input("Quick Bar needs fzf, which was not found on PATH.\nInstall it with: brew install fzf\n\nPress Enter to close. ")
+        return input("Quick Bar needs fzf, which was not found on PATH or in the usual install folders.\n"
+                     "Install it with: brew install fzf\n\nPress Enter to close. ")
     found = subprocess.run([fzf, "--version"], capture_output=True, text=True).stdout.split(" ")[0].strip()
     if tuple(int(n) for n in re.findall(r"\d+", found)[:2]) < (0, 60):  # --accept-nth arrived in 0.60
         return input(f"Quick Bar needs fzf 0.60 or newer, found {found or 'unknown'}.\nUpgrade with: brew upgrade fzf\n\nPress Enter to close. ")
